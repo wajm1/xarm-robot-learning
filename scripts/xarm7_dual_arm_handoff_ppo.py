@@ -112,6 +112,19 @@ def _t(value):
     return value.torch if hasattr(value, "torch") else value
 
 
+def _skew_batch(vec):
+    """Batch skew-symmetric matrices for (N, 3) vectors."""
+    x, y, z = vec[:, 0], vec[:, 1], vec[:, 2]
+    out = vec.new_zeros(vec.shape[0], 3, 3)
+    out[:, 0, 1] = -z
+    out[:, 0, 2] = y
+    out[:, 1, 0] = z
+    out[:, 1, 2] = -x
+    out[:, 2, 0] = -y
+    out[:, 2, 1] = x
+    return out
+
+
 def _set_q_target(robot, q, joint_ids):
     if hasattr(robot, "set_joint_position_target_index"):
         robot.set_joint_position_target_index(target=q, joint_ids=joint_ids)
@@ -246,11 +259,13 @@ class XArm7HandoffEnv(DirectRLEnv):
             spawn=sim_utils.CuboidCfg(
                 size=(CUBE_SIZE, CUBE_SIZE, CUBE_SIZE),
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                    solver_position_iteration_count=8, solver_velocity_iteration_count=1
+                    solver_position_iteration_count=16, solver_velocity_iteration_count=4
                 ),
                 mass_props=sim_utils.MassPropertiesCfg(mass=0.075),
                 collision_props=sim_utils.CollisionPropertiesCfg(),
-                physics_material=sim_utils.RigidBodyMaterialCfg(static_friction=1.2, dynamic_friction=1.0),
+                physics_material=sim_utils.RigidBodyMaterialCfg(
+                    static_friction=1.8, dynamic_friction=1.5, restitution=0.0
+                ),
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.82, 0.09, 0.06)),
             ),
             init_state=RigidObjectCfg.InitialStateCfg(pos=(0.20, 0.0, TABLE_Z + CUBE_SIZE / 2.0)),
@@ -281,7 +296,11 @@ class XArm7HandoffEnv(DirectRLEnv):
         }
         arm_actuators = {
                 "arm": ImplicitActuatorCfg(joint_names_expr=["joint[1-7]"], stiffness=450.0, damping=90.0),
-                "gripper": ImplicitActuatorCfg(joint_names_expr=["drive_joint", ".*finger.*", ".*knuckle.*"], stiffness=200.0, damping=40.0),
+                "gripper": ImplicitActuatorCfg(
+                    joint_names_expr=["drive_joint", ".*finger.*", ".*knuckle.*"],
+                    stiffness=500.0,
+                    damping=80.0,
+                ),
             }
         self.giver = Articulation(
             ArticulationCfg(
@@ -373,6 +392,38 @@ class XArm7HandoffEnv(DirectRLEnv):
         base_pos = _t(robot.data.body_pos_w)[:, body_id, :]
         base_quat = _t(robot.data.body_quat_w)[:, body_id, :]
         return base_pos + quat_apply(base_quat, self._tcp_offset)
+
+    def _tcp_pos_jacobian(self, robot, body_id, arm_ids):
+        """World-frame translational Jacobian at the gripper TCP."""
+        data = robot.data
+        jac = None
+        for name in ("body_jacobian_w", "body_link_jacobian_w"):
+            if hasattr(data, name):
+                val = getattr(data, name)
+                if val is not None:
+                    jac = _t(val)[:, body_id]
+                    break
+        if jac is None:
+            raw = robot.root_physx_view.get_jacobians()
+            idx = body_id - 1 if getattr(robot, "is_fixed_base", False) else body_id
+            jac = raw[:, max(int(idx), 0)]
+        if jac.shape[-1] > len(arm_ids):
+            jac = jac[:, :, arm_ids]
+        j_lin, j_ang = jac[:, :3], jac[:, 3:6]
+        offset = quat_apply(_t(data.body_quat_w)[:, body_id], self._tcp_offset)
+        return j_lin - torch.bmm(_skew_batch(offset), j_ang)
+
+    def _servo_tcp(self, robot, body_id, arm_ids, q_arm, target, max_step=0.10):
+        err = (target - self._ee_pos(robot, body_id)).clamp(-0.10, 0.10)
+        j_pos = self._tcp_pos_jacobian(robot, body_id, arm_ids)
+        lam = 0.08
+        eye = torch.eye(3, device=self.device, dtype=j_pos.dtype).expand(j_pos.shape[0], 3, 3)
+        jj_t = torch.bmm(j_pos, j_pos.transpose(1, 2)) + (lam * lam) * eye
+        dq = torch.bmm(j_pos.transpose(1, 2), torch.linalg.solve(jj_t, err.unsqueeze(-1))).squeeze(-1)
+        dq = dq.clamp(-max_step, max_step)
+        q_des = q_arm + dq
+        q_des[:, 6] = 0.0
+        return torch.clamp(q_des, self.arm_low, self.arm_high)
 
     def _pre_physics_step(self, actions):
         # Clone so later in-place resets are valid outside torch.inference_mode.
@@ -694,11 +745,14 @@ def record_isaac_states(
             prev_cube = c
             continue
         prev_cube = c
-        if action_fn is not None and step % 60 == 0:
+        if action_fn is not None and step % 30 == 0:
+            gclose = float(_t(env.giver.data.joint_pos)[0, env.grip_ids[0]].detach().cpu())
+            rclose = float(_t(env.receiver.data.joint_pos)[0, env.r_grip_ids[0]].detach().cpu())
             print(
-                f"motion step {step}: cube={np.round(c, 3)} "
+                f"motion step {step}: cube={np.round(c, 3)} zrel={c[2] - TABLE_Z:.3f} "
                 f"giver-cube={float(torch.linalg.norm(env._ee_pos(env.giver, env.ee_id)[0] - env._cube_pos()[0])):.3f} "
-                f"receiver-cube={float(torch.linalg.norm(env._ee_pos(env.receiver, env.r_ee_id)[0] - env._cube_pos()[0])):.3f}",
+                f"receiver-cube={float(torch.linalg.norm(env._ee_pos(env.receiver, env.r_ee_id)[0] - env._cube_pos()[0])):.3f} "
+                f"g_drive={gclose:.3f} r_drive={rclose:.3f}",
                 flush=True,
             )
         gq = _t(env.giver.data.joint_pos)
@@ -723,48 +777,96 @@ def record_isaac_states(
 
 
 def scripted_handoff_actions(env: XArm7HandoffEnv, step: int) -> torch.Tensor:
-    """Scripted path for checking the grippers and cube contacts in PhysX."""
-    home = np.asarray(HOME_Q, dtype=np.float32)
-    plan = (
-        (0, home, home, -1.0, -1.0),
-        (60, np.array((0, -.2592, 0, .5928, 0, 1.4343, 0)),
-         np.array((0, -.1091, 0, .9127, 0, 1.0547, 0)), -1.0, -1.0),
-        (120, np.array((0, -.0137, 0, .5187, 0, 1.1322, 0)),
-         np.array((0, -.1091, 0, .9127, 0, 1.0547, 0)), -1.0, -1.0),
-        (160, np.array((0, -.0137, 0, .5187, 0, 1.1322, 0)),
-         np.array((0, -.1091, 0, .9127, 0, 1.0547, 0)), 1.0, -1.0),
-        (220, np.array((0, -.3996, 0, .6407, 0, 1.5650, 0)),
-         np.array((0, -.1091, 0, .9127, 0, 1.0547, 0)), 1.0, -1.0),
-        (320, np.array((0, .0497, 0, 1.0267, 0, .7857, 0)),
-         np.array((0, -.1091, 0, .9127, 0, 1.0547, 0)), 1.0, -1.0),
-        (380, np.array((0, .0497, 0, 1.0267, 0, .7857, 0)),
-         np.array((.0765, .0887, .0747, 1.1482, .0343, .7589, 0)), 1.0, -1.0),
-        (430, np.array((0, .0497, 0, 1.0267, 0, .7857, 0)),
-         np.array((.0810, .1764, .0781, 1.2052, .0361, .6784, 0)), 1.0, -1.0),
-        (480, np.array((0, .0497, 0, 1.0267, 0, .7857, 0)),
-         np.array((.0810, .1764, .0781, 1.2052, .0361, .6784, 0)), 1.0, 1.0),
-        (530, np.array((0, .0497, 0, 1.0267, 0, .7857, 0)),
-         np.array((.0810, .1764, .0781, 1.2052, .0361, .6784, 0)), -1.0, 1.0),
-        (565, np.array((0, -.4612, 0, .8133, 0, 1.2477, 0)),
-         np.array((.0810, .1764, .0781, 1.2052, .0361, .6784, 0)), -1.0, 1.0),
-        (590, np.array((0, -.4612, 0, .8133, 0, 1.2477, 0)),
-         np.array((.1283, -.3638, .1246, .9116, .0445, 1.1086, 0)), -1.0, 1.0),
-    )
-    left, right = plan[-2], plan[-1]
-    for a, b in zip(plan[:-1], plan[1:]):
-        if step <= b[0]:
-            left, right = a, b
-            break
-    alpha = np.clip((step - left[0]) / max(right[0] - left[0], 1), 0.0, 1.0)
-    giver_q = left[1] + alpha * (right[1] - left[1])
-    recv_q = left[2] + alpha * (right[2] - left[2])
-    recv_q[6] = RECEIVER_HOME_Q[6]
-    action = np.zeros(16, dtype=np.float32)
-    action[:7] = np.clip((giver_q - home) / env.cfg.action_scale, -1.0, 1.0)
-    action[8:15] = np.clip((recv_q - np.asarray(RECEIVER_HOME_Q)) / env.cfg.action_scale, -1.0, 1.0)
-    action[7] = left[3] + alpha * (right[3] - left[3])
-    action[15] = left[4] + alpha * (right[4] - left[4])
-    return torch.as_tensor(action, device=env.device).unsqueeze(0).repeat(env.num_envs, 1)
+    """Closed-loop TCP servo so the receiver actually pinches the cube.
+
+    The old joint waypoints put the receiver near the cube, then moved both
+    arms on release. That latched 'acquired' from proximity and dropped the
+    cube. Keep joint 7 at 0. Receiver holds its pinch pose after it closes.
+    """
+    cube = env._cube_pos()
+    origin = env.scene.env_origins
+    handoff = origin + env._handoff.unsqueeze(0)
+    ready = origin + env._receiver_ready.unsqueeze(0)
+    gq = _t(env.giver.data.joint_pos)[:, env.arm_ids]
+    rq = _t(env.receiver.data.joint_pos)[:, env.r_arm_ids]
+    # World offsets: giver stays on -X of the cube, receiver on +X, so the
+    # two grippers sandwich a 5.5 cm cube instead of occupying the same point.
+    g_side = cube.new_tensor([-0.025, 0.0, 0.0])
+    r_side = cube.new_tensor([0.025, 0.0, 0.0])
+    above = cube.new_tensor([0.0, 0.0, 0.11])
+
+    if step < 70:
+        g_tgt, r_tgt, gg, rg = cube + above + g_side, ready, -1.0, -1.0
+    elif step < 130:
+        g_tgt, r_tgt, gg, rg = cube + g_side, ready, -1.0, -1.0
+    elif step < 200:
+        g_tgt, r_tgt, gg, rg = cube + g_side, ready, 1.0, -1.0
+    elif step < 280:
+        g_tgt, r_tgt, gg, rg = handoff + g_side, ready, 1.0, -1.0
+    elif step < 360:
+        g_tgt, r_tgt, gg, rg = cube + g_side, cube + r_side + cube.new_tensor([0.07, 0.0, 0.0]), 1.0, -1.0
+    elif step < 420:
+        g_tgt, r_tgt, gg, rg = cube + g_side, cube + r_side, 1.0, -1.0
+    elif step < 490:
+        g_tgt, r_tgt, gg, rg = cube + g_side, cube + r_side, 1.0, 1.0
+    elif step < 545:
+        g_tgt, r_tgt, gg, rg = cube + g_side, cube + r_side, -1.0, 1.0
+    else:
+        retreat = cube.new_tensor([-0.22, 0.0, 0.03])
+        g_tgt, r_tgt, gg, rg = cube + retreat, cube + r_side, -1.0, 1.0
+
+    cube_z = cube[:, 2] - TABLE_Z
+    if step >= 420:
+        # Do not chase a dropped cube into the table.
+        hold = cube_z > 0.07
+        if not bool(hold.all()):
+            r_tgt = torch.where(hold.unsqueeze(-1), r_tgt, env._ee_pos(env.receiver, env.r_ee_id))
+
+    g_qdes = env._servo_tcp(env.giver, env.ee_id, env.arm_ids, gq, g_tgt)
+    r_qdes = env._servo_tcp(env.receiver, env.r_ee_id, env.r_arm_ids, rq, r_tgt)
+    home = torch.as_tensor(HOME_Q, device=env.device, dtype=g_qdes.dtype)
+    recv_home = torch.as_tensor(RECEIVER_HOME_Q, device=env.device, dtype=r_qdes.dtype)
+    action = torch.zeros((env.num_envs, 16), device=env.device, dtype=g_qdes.dtype)
+    action[:, :7] = torch.clamp((g_qdes - home) / env.cfg.action_scale, -1.0, 1.0)
+    action[:, 8:15] = torch.clamp((r_qdes - recv_home) / env.cfg.action_scale, -1.0, 1.0)
+    action[:, 7] = gg
+    action[:, 15] = rg
+    return action
+
+
+def _transfer_verdict(traj, env: XArm7HandoffEnv) -> dict:
+    """True transfer: cube stays up after the giver opens and moves away."""
+    cubes = np.asarray(traj["cube_pos"])
+    giver_g = np.asarray(traj["giver_gripper"])
+    recv_g = np.asarray(traj["recv_gripper"])
+    zrel = cubes[:, 2] - TABLE_Z
+    g_span = max(env.grip_high - env.grip_low, 1e-6)
+    g_close = np.clip((giver_g - env.grip_low) / g_span, 0.0, 1.0)
+    r_close = np.clip((recv_g - env.grip_low) / g_span, 0.0, 1.0)
+    opened = np.where(g_close < 0.35)[0]
+    after = opened[opened > 200]
+    if len(after) == 0:
+        return {
+            "receiver_held_after_release": False,
+            "reason": "giver never opened",
+            "post_release_min_z": float(zrel[-1]),
+            "post_release_mean_z": float(zrel[-1]),
+            "end_cube": cubes[-1].tolist(),
+            "end_g_close": float(g_close[-1]),
+            "end_r_close": float(r_close[-1]),
+        }
+    start = int(after[0])
+    tail_z = zrel[start:]
+    held = bool(tail_z.min() > 0.08 and tail_z[-1] > 0.10 and r_close[start:].mean() > 0.5)
+    return {
+        "receiver_held_after_release": held,
+        "reason": "cube stayed elevated after giver opened" if held else "cube dropped or receiver lost it after giver opened",
+        "post_release_min_z": float(tail_z.min()),
+        "post_release_mean_z": float(tail_z.mean()),
+        "end_cube": cubes[-1].tolist(),
+        "end_g_close": float(g_close[-1]),
+        "end_r_close": float(r_close[-1]),
+    }
 
 
 def render_mujoco_video(states: Path | None, output: Path, label: str, seconds: float | None = None) -> None:
@@ -860,12 +962,20 @@ def main() -> None:
         if args.motion_test:
             render_mujoco_video(states, output, "scripted PhysX handoff attempt", seconds=10.0)
         traj = np.load(states)
-        cubes = traj["cube_pos"]
+        verdict = _transfer_verdict(traj, env)
         print(
-            f"MOTION_TEST frames={len(cubes)} max_cube_height={float(cubes[:, 2].max() - TABLE_Z):.3f} "
-            f"max_cube_x={float(cubes[:, 0].max()):.3f} "
+            f"MOTION_TEST frames={len(traj['cube_pos'])} max_cube_height={float(traj['cube_pos'][:, 2].max() - TABLE_Z):.3f} "
+            f"max_cube_x={float(traj['cube_pos'][:, 0].max()):.3f} "
             f"giver_grasp={bool(env.grasp_seen[0])} lift={bool(env.lift_seen[0])} "
             f"receiver_acquired={bool(env.handoff_seen[0])} handoff_success={bool(env.successes[0])}",
+            flush=True,
+        )
+        print(
+            f"TRANSFER_CHECK held={verdict['receiver_held_after_release']} "
+            f"reason={verdict['reason']} post_release_min_z={verdict['post_release_min_z']:.3f} "
+            f"post_release_mean_z={verdict['post_release_mean_z']:.3f} "
+            f"end_cube={np.round(verdict['end_cube'], 3).tolist()} "
+            f"end_g_close={verdict['end_g_close']:.2f} end_r_close={verdict['end_r_close']:.2f}",
             flush=True,
         )
         if args.motion_test:
