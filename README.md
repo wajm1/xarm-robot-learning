@@ -1,15 +1,13 @@
 # xArm7 robot learning
 
-Isaac Lab + PPO on a RunPod GPU. One xArm7 picks up a cube. Two arms try to pass it.
+Isaac Lab + PPO on a RunPod GPU. One xArm7's goal is to pick up the cube and the other xArm tries to grab it. 
 
-Isaac is at `/root/IsaacLab`. This repo lives at `/workspace/xarm-robot-learning`. Videos are MuJoCo (CPU), not Isaac cameras.
+Videos are MuJoCo
 
 ```
-scripts/xarm7_cube_ppo.py              one arm
-scripts/xarm7_dual_arm_handoff_ppo.py  two arms
+scripts/xarm7_cube_ppo.py              arm 1
+scripts/xarm7_dual_arm_handoff_ppo.py  arm 2
 ```
-
-Checkpoints go in `logs/`. Videos go in `videos/`.
 
 ## Dual-arm
 
@@ -29,7 +27,5 @@ export OMNI_KIT_ACCEPT_EULA=YES ACCEPT_EULA=Y
   --num_envs 128 --max_iterations 1000 --video_milestones 500,1000 \
   --log_dir logs/xarm7_dual_handoff_1000 --video_dir videos
 ```
-
-Keep it in the foreground. After Isaac starts you should see iteration lines. A milestone video can sit on the first-frame RGB line for a minute while it encodes — that is not a crash.
 
 Pod SSH and install notes: [docs/runpod.md](docs/runpod.md).
