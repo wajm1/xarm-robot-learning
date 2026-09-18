@@ -723,12 +723,7 @@ def record_isaac_states(
 
 
 def scripted_handoff_actions(env: XArm7HandoffEnv, step: int) -> torch.Tensor:
-    """Kinematics checked open-loop reference for a single review video.
-
-    These joint poses put the two MuJoCo TCP sites on reachable points above
-    the table within the PPO action range. PhysX still determines whether the
-    cube is actually grasped and transferred.
-    """
+    """Scripted path for checking the grippers and cube contacts in PhysX."""
     home = np.asarray(HOME_Q, dtype=np.float32)
     plan = (
         (0, home, home, -1.0, -1.0),
@@ -744,10 +739,14 @@ def scripted_handoff_actions(env: XArm7HandoffEnv, step: int) -> torch.Tensor:
          np.array((0, -.1091, 0, .9127, 0, 1.0547, 0)), 1.0, -1.0),
         (380, np.array((0, .0497, 0, 1.0267, 0, .7857, 0)),
          np.array((.0765, .0887, .0747, 1.1482, .0343, .7589, 0)), 1.0, -1.0),
-        (470, np.array((0, .0497, 0, 1.0267, 0, .7857, 0)),
-         np.array((.0866, .2861, .0820, 1.2764, .0385, .5778, 0)), 1.0, 1.0),
-        (525, np.array((0, -.4612, 0, .8133, 0, 1.2477, 0)),
-         np.array((.0866, .2861, .0820, 1.2764, .0385, .5778, 0)), -1.0, 1.0),
+        (430, np.array((0, .0497, 0, 1.0267, 0, .7857, 0)),
+         np.array((.0810, .1764, .0781, 1.2052, .0361, .6784, 0)), 1.0, -1.0),
+        (480, np.array((0, .0497, 0, 1.0267, 0, .7857, 0)),
+         np.array((.0810, .1764, .0781, 1.2052, .0361, .6784, 0)), 1.0, 1.0),
+        (530, np.array((0, .0497, 0, 1.0267, 0, .7857, 0)),
+         np.array((.0810, .1764, .0781, 1.2052, .0361, .6784, 0)), -1.0, 1.0),
+        (565, np.array((0, -.4612, 0, .8133, 0, 1.2477, 0)),
+         np.array((.0810, .1764, .0781, 1.2052, .0361, .6784, 0)), -1.0, 1.0),
         (590, np.array((0, -.4612, 0, .8133, 0, 1.2477, 0)),
          np.array((.1283, -.3638, .1246, .9116, .0445, 1.1086, 0)), -1.0, 1.0),
     )
