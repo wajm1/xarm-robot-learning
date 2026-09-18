@@ -6,4 +6,4 @@ Use the SSH command shown in the pod's **Connect** tab. On the current pod, dire
 
 Run tests and training in the foreground so progress and errors stay visible. Videos are saved to `videos/` with MuJoCo's CPU renderer, not Isaac RTX cameras.
 
-For the dual-arm check and training command, see [dual_arm_handoff.md](dual_arm_handoff.md).
+For the dual-arm check and training command, see [dual_arm_handoff.md](dual_arm_handoff.md).  
