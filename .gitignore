@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+.aws/
+aws_credentials*
+
+# Training outputs (kept on the RunPod volume)
+logs/**
+!logs/.gitkeep
+videos/**
+!videos/.gitkeep
+
+# Editor settings
+.vscode/
+.idea/
