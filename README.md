@@ -4,6 +4,11 @@ Isaac Lab + PPO on a RunPod GPU. One xArm7's goal is to pick up the cube and the
 
 Videos are MuJoCo
 
+## Demo
+
+[▶️ Watch Video of current status](videos/xarm7_dual_motion_test_Iiteration_3471.mp4)
+
+
 ```
 scripts/xarm7_cube_ppo.py              arm 1
 scripts/xarm7_dual_arm_handoff_ppo.py  arm 2
