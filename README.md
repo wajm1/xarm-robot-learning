@@ -4,9 +4,10 @@ Isaac Lab + PPO on a RunPod GPU. One xArm7's goal is to pick up the cube and the
 
 Videos are MuJoCo
 
-## Demo
+<h2>Demo</h2>
 
-[▶️ Watch Video of current status](videos/xarm7_dual_motion_test_Iiteration_3471.mp4)
+<video src="https://github.com/wajm1/xarm-robot-learning/raw/refs/heads/main/videos/xarm7_dual_motion_test_Iiteration_3471.mp4" controls width="800"></video>
+
 
 
 ```
