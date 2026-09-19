@@ -1,13 +1,12 @@
 # xArm7 robot learning
 
-Isaac Lab + PPO on a RunPod GPU. One xArm7's goal is to pick up the cube and the other xArm tries to grab it. 
+Isaac Lab + PPO on a RunPod GPU. One xArm7's goal is to pick up the cube and the other xArm tries to grab it.
+
+## Demo
+
+[Watch the xArm7 dual-arm motion test](videos/xarm7_dual_motion_test_Iiteration_3471.mp4)
 
 Videos are MuJoCo
-
-<h2>Demo</h2>
-
-<video src="https://github.com/wajm1/xarm-robot-learning/raw/refs/heads/main/videos/xarm7_dual_motion_test_Iiteration_3471.mp4" controls width="800"></video>
-
 
 
 ```
