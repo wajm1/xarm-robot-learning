@@ -4,7 +4,7 @@ Isaac Lab + PPO on a RunPod GPU. One xArm7's goal is to pick up the cube and the
 
 ## Demo
 
-[Watch the xArm7 dual-arm motion test]
+Current Stage of training
 
 https://github.com/user-attachments/assets/7f7c5847-fb4c-46bb-a40d-63382f9e82bc
 
